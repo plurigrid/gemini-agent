@@ -46,6 +46,15 @@ from .tools_nashator import (
     nashator_gf3_check,
     nashator_games,
 )
+from .tools_marl import (
+    generative_channel,
+    recognition_channel,
+    channel_compose,
+    marl_reward_design,
+    marl_coordination_step,
+    mutual_information,
+    demand_response_mi,
+)
 
 
 # -- Protein interleave tools (Design→Predict→Validate loop) -----------------
@@ -293,6 +302,34 @@ A 'nothing' status means Nashator isn't running — inform the user to start it.
     output_key="nashator_result",
 )
 
+marl_agent = Agent(
+    name="MARLAgent",
+    model="gemini-2.0-flash",
+    description="Multi-agent RL, Markov category channels (generative/recognition), mutual information for DER coordination.",
+    instruction="""You are the MARL and information-theoretic agent for Plurigrid.
+
+You implement the Markov category learning loop from the Plurigrid ontology:
+- generative_channel: forward morphism P(s', r | s, a) — game dynamics
+- recognition_channel: inverse morphism Q(z | x) — inference/belief update
+- channel_compose: close the loop (generative ∘ recognition ≈ id, up to KL)
+
+MARL coordination for DERs:
+- marl_reward_design: design reward structures (cost, renewable, reliability, emissions)
+- marl_coordination_step: execute one multi-agent step
+
+Mutual information optimization:
+- mutual_information: compute I(X;Y) between agent variables
+- demand_response_mi: MI between load profiles and grid demand
+
+The generative channel maps to NashatorAgent (Open Games = forward game dynamics).
+The recognition channel maps to BayesAgent (inference = inverse model).
+This agent composes them and quantifies coordination via MI.""",
+    tools=[generative_channel, recognition_channel, channel_compose,
+           marl_reward_design, marl_coordination_step,
+           mutual_information, demand_response_mi],
+    output_key="marl_result",
+)
+
 # -- Composite pipelines ------------------------------------------------------
 
 # Parallel data gathering: Vertex + BigQuery simultaneously
@@ -343,38 +380,69 @@ full_interleave = SequentialAgent(
     sub_agents=[full_parallel, propagator_agent],
 )
 
+# Markov category learning loop: Nashator (generative) → Bayes (recognition) → MARL (compose + MI)
+learning_loop = SequentialAgent(
+    name="LearningLoop",
+    description="Markov category learning loop: generative (game dynamics) → recognition (inference) → channel composition + MI optimization.",
+    sub_agents=[nashator_agent, bayes_agent, marl_agent, propagator_agent],
+)
+
 # -- Root orchestrator --------------------------------------------------------
 
 root_agent = Agent(
     name="asi_orchestrator",
     model="gemini-2.0-flash",
     description="ASI orchestrator for the plurigrid GCP interleave stack.",
-    instruction="""You are the ASI orchestrator for the plurigrid GCP interleave stack.
+    instruction="""You are the ASI orchestrator for the Plurigrid GCP interleave stack.
 
-You coordinate six specialist sub-agents:
+## Plurigrid Protocol Context
+The Plurigrid Protocol uses compositional game theory (Open Games framework)
+to coordinate decentralized energy systems. Key concepts:
+- Generative channels: morphisms in a Markov category modeling stochastic processes
+  (strategies → states → payoffs)
+- Recognition channels: inference morphisms mapping observations → latent variables
+- Together they form the learning loop: generative (forward) + recognition (inverse)
+- MARL (multi-agent reinforcement learning) for DER coordination
+- Mutual information optimization aligns individual and multi-agent objectives
+
+## Sub-Agents
 1. VertexAgent — Vertex AI predictions, pipelines, Gemini oracle, model registry
 2. BigQueryAgent — BigQuery SQL, schema inspection, dataset browsing
 3. ProteinAgent — ESM/AlphaFold structure prediction, gnomAD variants, protein similarity
 4. BayesAgent — Probabilistic inference: SMC, MCMC, PMMH, RMSMC (monad-bayes stacks)
-5. NashatorAgent — Game theory: Nash equilibrium, game composition, GF(3) validation (:9999)
-6. PropagatorAgent — CellValue lattice merge, GF(3) trit arithmetic, AGM belief revision
+   Maps to recognition channel (inference morphism in Markov category)
+5. NashatorAgent — Game theory: Nash equilibrium, game composition, GF(3) validation
+   Maps to Open Games framework: cityLearn, eip1559, gpu_routing, etc.
+6. MARLAgent — Markov category channels, MARL coordination, mutual information
+   Generative channel (forward) + Recognition channel (inverse) + MI optimization
+7. PropagatorAgent — CellValue lattice merge, GF(3) trit arithmetic, AGM belief revision
+   Maps to the coordination layer: merging generative + recognition outputs
 
-Composite pipelines available:
+## Composite Pipelines
 - GatherAndMerge: parallel Vertex+BQ → propagator merge
 - ProteinPipeline: fold → similarity → validate → propagator
-- GameVerify: Nashator solve → GF(3) verification
-- BayesMerge: Bayesian inference → propagator lattice merge
+- GameVerify: Nashator solve → GF(3) verification (Open Games → trit conservation)
+- BayesMerge: Bayesian inference → propagator merge (recognition channel → lattice)
 - FullInterleave: ALL 5 data agents in parallel → propagator merge
+- LearningLoop: Nashator (generative) → Bayes (recognition) → MARL (compose + MI) → Propagator
 
+## Routing
 Route user requests to the appropriate specialist. For cross-domain queries,
 delegate to multiple agents and use PropagatorAgent to merge via lattice_merge.
 
-Invariants:
-  CellValue: Nothing < Value < Contradiction
-  GF(3) trit conservation across all agent outputs
-  AGM belief revision follows Levi identity: (K - ~p) + p""",
+For game-theoretic questions about energy markets, DER coordination, or
+incentive design, use NashatorAgent. For probabilistic inference and
+belief updates, use BayesAgent. The generative→recognition loop maps to
+Nashator (generative: game dynamics) → Bayes (recognition: inference) → Propagator (merge).
+
+## Invariants
+- CellValue: Nothing < Value < Contradiction (propagator.zig)
+- GF(3) trit conservation across all agent outputs
+- AGM belief revision: Levi identity (K - ~p) + p
+- Markov category: generative ∘ recognition ≈ identity (up to KL divergence)
+- Mutual information: I(X;Y) measures coordination quality between DER agents""",
     sub_agents=[vertex_agent, bigquery_agent, protein_agent,
-                bayes_agent, nashator_agent, propagator_agent,
+                bayes_agent, nashator_agent, marl_agent, propagator_agent,
                 gather_and_merge, protein_pipeline, game_verify,
-                bayes_merge, full_interleave],
+                bayes_merge, full_interleave, learning_loop],
 )
